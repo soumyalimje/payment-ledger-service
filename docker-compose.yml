@@ -1,0 +1,41 @@
+# Runs the whole project -- database AND app -- with one command:
+#   docker-compose up --build
+#
+# This replaces every manual setup step we had to debug earlier (installing
+# Postgres, creating roles, finding the JDBC driver, matching classpaths) --
+# Docker packages all of that into two reproducible containers.
+
+version: "3.9"
+
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: payment_ledger
+    ports:
+      - "5432:5432"
+    volumes:
+      # Postgres's official image automatically runs any .sql file placed here
+      # on first startup -- this replaces the manual `psql -f sql/schema.sql` step.
+      - ./sql/schema.sql:/docker-entrypoint-initdb.d/schema.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 3s
+      timeout: 3s
+      retries: 10
+
+  app:
+    build: .
+    ports:
+      - "8090:8090"
+    environment:
+      # Note: "postgres" here is the service name above, not "localhost" --
+      # this is exactly why Db.java was changed to read this from an env var.
+      DB_URL: jdbc:postgresql://postgres:5432/payment_ledger
+      DB_USER: postgres
+      DB_PASSWORD: postgres
+    depends_on:
+      postgres:
+        condition: service_healthy

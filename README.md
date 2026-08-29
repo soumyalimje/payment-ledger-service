@@ -51,7 +51,22 @@ double the previous delay, up to 4 attempts. The payment API response
 never waits for this — it's fired after the HTTP response is already
 being sent.
 
-## Running it
+## Running it with Docker (recommended — solves every local setup issue we hit)
+
+Everything earlier in this project's history — the missing JDBC driver, the Postgres role mismatch, the zsh quoting issue, port conflicts — was purely local-environment friction. Docker packages the exact right environment (Java, Postgres, the driver, schema) into two containers so none of that setup is needed:
+
+```bash
+docker-compose up --build
+```
+
+That's it — this starts Postgres (with the schema auto-applied on first run) and the app, wired together correctly. Test it the same way as before:
+```bash
+curl -X POST http://localhost:8090/payments -d '{"idempotency_key":"docker-1","from_account":"customer_1","to_account":"merchant_A","amount":500}'
+```
+
+**Honest disclosure:** this sandbox environment doesn't have Docker installed, so the Dockerfile and docker-compose.yml were written carefully and validated (YAML syntax checked, `Db.java`'s environment-variable fallback confirmed working for local/non-Docker use) but **not run end-to-end with actual `docker-compose up`**. If something doesn't work on the first try, that's expected for untested infrastructure code, not a sign to give up — the same debugging approach used throughout this whole project (read the actual error, check what changed) applies here too.
+
+## Running it without Docker (the original way)
 
 Requires: Java 21+ JDK, PostgreSQL, the `postgresql-jdbc` driver jar
 (on Debian/Ubuntu: `apt-get install openjdk-21-jdk-headless postgresql
