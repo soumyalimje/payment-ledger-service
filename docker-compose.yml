@@ -1,11 +1,5 @@
 # Runs the whole project -- database AND app -- with one command:
 #   docker-compose up --build
-#
-# This replaces every manual setup step we had to debug earlier (installing
-# Postgres, creating roles, finding the JDBC driver, matching classpaths) --
-# Docker packages all of that into two reproducible containers.
-
-version: "3.9"
 
 services:
   postgres:

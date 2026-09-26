@@ -1,144 +1,155 @@
 # Payment Ledger Service
 
-A single-service backend modeling the core reliability guarantees of a
-payment gateway like Razorpay: idempotency, a double-entry ledger, safe
-concurrency, and reliable webhook delivery. No UI — this is an API you'd
-test with curl or Postman.
+[![CI](https://github.com/soumyalimje/payment-ledger-service/actions/workflows/ci.yml/badge.svg)](https://github.com/soumyalimje/payment-ledger-service/actions/workflows/ci.yml)
 
-## Files (7 Java classes, ~500 lines total — read in this order)
+A backend-only service modeling the core reliability guarantees of a payment
+gateway like Razorpay: idempotency, a database-enforced double-entry ledger,
+safe concurrency, and durable webhook delivery. No UI — this is an API you
+exercise with curl, and a test suite that fails loudly.
 
-1. **`sql/schema.sql`** — the 3 tables + the trigger that enforces ledger
-   balance *in the database itself*, not just in application code.
-2. **`Db.java`** — one method, opens a JDBC connection. Nothing else.
-3. **`IdempotencyService.java`** — the "create-or-get" logic. This is the
-   file to read to understand how duplicate requests get caught.
-4. **`LedgerService.java`** — the actual money movement, with the
-   `SELECT ... FOR UPDATE` locking that prevents race conditions.
-5. **`WebhookService.java`** — background thread + retry queue with
-   exponential backoff (2s, 4s, 8s, 16s).
-6. **`PaymentService.java`** — wires the above three together for one
-   incoming payment request.
-7. **`PaymentServer.java`** — the HTTP layer. `POST /payments`.
-8. **`Json.java`** — tiny hand-rolled JSON helpers (no external library needed).
-
-## How each of the 4 requirements is actually implemented
-
-**Idempotency:** `IdempotencyService.checkAndStart()` does
-`INSERT ... ON CONFLICT (idempotency_key) DO NOTHING`. Postgres itself
-guarantees only one concurrent insert of the same key wins — that's what
-makes it atomic, not a check-then-insert in Java (which would have a race
-condition).
-
-**Double-entry ledger:** every transfer writes two rows to
-`ledger_entries` (a negative debit, a positive credit) sharing one
-`transaction_id`. A **deferred constraint trigger** in Postgres
-(`check_ledger_balance()`) runs at COMMIT time and raises an exception —
-aborting the whole transaction — if a `transaction_id`'s entries don't
-sum to zero. This is enforced by the database, not just trusted from
-application code.
-
-**Concurrency control:** `LedgerService.transfer()` uses
-`SELECT ... FOR UPDATE` to lock both account rows before checking
-balances. It always locks accounts in a fixed alphabetical order
-regardless of which is "from" and which is "to," which is what prevents
-deadlocks when two transfers touch the same two accounts in opposite
-order at the same time.
-
-**Webhook retry:** `WebhookService` runs a background daemon thread
-reading from a `DelayQueue` — a queue that only releases an item once its
-scheduled time has arrived. Failed deliveries get re-enqueued with
-double the previous delay, up to 4 attempts. The payment API response
-never waits for this — it's fired after the HTTP response is already
-being sent.
-
-## Running it with Docker (recommended — solves every local setup issue we hit)
-
-Everything earlier in this project's history — the missing JDBC driver, the Postgres role mismatch, the zsh quoting issue, port conflicts — was purely local-environment friction. Docker packages the exact right environment (Java, Postgres, the driver, schema) into two containers so none of that setup is needed:
+## Quickstart
 
 ```bash
-docker-compose up --build
+docker-compose up --build        # Postgres + app, schema auto-applied
+# ...or locally: see "Running without Docker" below
 ```
-
-That's it — this starts Postgres (with the schema auto-applied on first run) and the app, wired together correctly. Test it the same way as before:
-```bash
-curl -X POST http://localhost:8090/payments -d '{"idempotency_key":"docker-1","from_account":"customer_1","to_account":"merchant_A","amount":500}'
-```
-
-**Honest disclosure:** this sandbox environment doesn't have Docker installed, so the Dockerfile and docker-compose.yml were written carefully and validated (YAML syntax checked, `Db.java`'s environment-variable fallback confirmed working for local/non-Docker use) but **not run end-to-end with actual `docker-compose up`**. If something doesn't work on the first try, that's expected for untested infrastructure code, not a sign to give up — the same debugging approach used throughout this whole project (read the actual error, check what changed) applies here too.
-
-## Running it without Docker (the original way)
-
-Requires: Java 21+ JDK, PostgreSQL, the `postgresql-jdbc` driver jar
-(on Debian/Ubuntu: `apt-get install openjdk-21-jdk-headless postgresql
-libpostgresql-jdbc-java`).
 
 ```bash
-# one-time setup
-service postgresql start
-su postgres -c "createdb payment_ledger"
-su postgres -c "psql -d payment_ledger -f sql/schema.sql"
-
-# compile
-javac -cp "/usr/share/java/postgresql.jar" -d out src/*.java
-
-# run
-java -cp "out:/usr/share/java/postgresql.jar" PaymentServer
+curl -X POST http://localhost:8090/payments \
+  -d '{"idempotency_key":"abc123","from_account":"customer_1","to_account":"merchant_A","amount":500,"webhook_url":"https://example.com/hook"}'
 ```
 
-Then: `POST http://localhost:8090/payments`
-```json
-{"idempotency_key":"abc123","from_account":"customer_1","to_account":"merchant_A","amount":500,"webhook_url":"https://example.com/hook"}
+## Tests — run by CI on every push
+
+One command locally, zero edits needed for CI (the same scripts run against
+Homebrew Postgres on a Mac and a service container on GitHub Actions via
+`DB_HOST`/`DB_PORT`/`DB_NAME` env config):
+
+```bash
+bash tests/run_functional_tests.sh        # 28 assertions: functional, concurrency, all 7 bug regressions
+bash tests/run_webhook_restart_test.sh    # proves retry state survives a process crash
 ```
 
-## Tests — what was actually proven, not just claimed
+Exit code 0 only if every assertion passes. What the suites actually prove:
 
-Run `run_all_tests.sh` (starts Postgres + the server + runs everything)
-and `run_webhook_test.sh` separately (needs its own ~10s wait to observe
-retries).
-
-Results from the last run:
-
-| Test | Result |
+| Property | How it's proven |
 |---|---|
-| Basic payment | Balances move correctly (500 debited/credited) |
-| Duplicate idempotency key | Second request returns cached response; balance unchanged |
-| Insufficient funds | Rejected with `422 insufficient_funds`, no ledger entries created |
-| **25 concurrent requests, same idempotency key** | **Exactly 1 succeeded, 24 got `409 in_flight`. Exactly one transaction's worth of ledger entries exists.** |
-| **25 concurrent requests, distinct keys, same account** | **All 25 succeeded. Balance decreased by exactly 25×100. Zero ledger transactions found unbalanced.** |
-| Webhook to an unreachable endpoint | Delivery attempted async (didn't block the payment response), retried at 2s, then 4s, then 8s — doubling each time as designed |
+| No double-charging | 25 concurrent requests, same idempotency key: balance moved exactly once |
+| No lost updates | 25 concurrent distinct transfers: final balance exact, zero unbalanced transactions |
+| Bug 1 regression | Key reuse with different params → `409 idempotency_key_reused` |
+| Bug 2 regression | Validation failure resolves the key to `FAILED`; retry replays `422`, never stuck `in_flight` |
+| Bugs 3–5 regressions | Self-transfer, negative/oversized amounts, malformed JSON — all clean `400`s, server stays up |
+| Bug 6 regression | Amount above the overflow cap rejected |
+| Bug 7 regression | Loopback/private webhook URLs rejected (`SSRF`), public URLs accepted |
+| **Restart safety (v2)** | Webhook killed mid-retry with a `PENDING` row: the next boot recovers it and completes the full 4-attempt backoff lifecycle |
 
-## Bugs found and fixed (senior-level audit)
+## The four guarantees
 
-A full re-read of every file turned up 5 real bugs, all now fixed and covered by `run_bugfix_tests.sh`:
+**Idempotency.** `IdempotencyService.checkAndStart()` does
+`INSERT ... ON CONFLICT (idempotency_key) DO NOTHING`. Postgres itself
+guarantees only one concurrent insert of the same key wins — atomicity comes
+from the unique constraint, not from check-then-insert in Java (which has its
+own race).
 
-1. **Idempotency key reuse with different parameters was silently accepted.** Sending the same key with a different amount returned the *original* cached result instead of an error. **Fix:** `request_hash` is now actually compared; a mismatch returns `409 idempotency_key_reused`.
+**Double-entry ledger.** Every transfer writes two rows to `ledger_entries`
+(negative debit, positive credit) sharing one `transaction_id`. A deferred
+constraint trigger (`check_ledger_balance()`) runs at COMMIT and aborts the
+whole transaction if a `transaction_id`'s entries don't sum to zero — enforced
+by the database, not trusted from application code.
 
-2. **An invalid account (or any validation error) left the idempotency key permanently stuck.** `LedgerService` threw `IllegalArgumentException` for a bad account, but `PaymentService` only caught `InsufficientFundsException` and `SQLException` — the exception escaped uncaught, Step 3 (mark COMPLETED/FAILED) never ran, and that key returned `409 in_flight` forever. **Fix:** all validation errors are now caught and properly resolve the key to `FAILED`; a `RuntimeException` catch-all is added as a last line of defense; and as a second, independent safety net, any key stuck in `STARTED` for 30+ seconds (e.g. from a genuine server crash) can be atomically reclaimed by a later request.
+**Concurrency control.** `LedgerService.transfer()` uses
+`SELECT ... FOR UPDATE` on both account rows, always locked in a fixed
+alphabetical order regardless of from/to — which is what makes deadlock
+structurally impossible when two transfers touch the same accounts in
+opposite order.
 
-3. **Self-transfers (`from_account == to_account`) were silently allowed**, creating two no-op ledger entries. **Fix:** explicitly rejected with `400 invalid_request`.
+**Webhook delivery — persisted (v2).** Every notification is a row in
+`webhook_deliveries`, not just an in-memory queue entry. The background
+worker retries with exponential backoff (2s → 4s → 8s, max 4 attempts); on
+startup, every still-`PENDING` row is reloaded and its schedule resumes
+exactly where the dead process left off. Delivery is **at-least-once**:
+if the process dies after the POST reached the receiver but before the row
+was marked `DELIVERED`, the next boot delivers again — receivers dedupe on
+`transaction_id`, the same tradeoff real gateways make and document.
+Previously this state lived only in memory and a restart silently dropped
+every owed retry; a test now proves the new behavior.
 
-4. **Negative or absurdly oversized amounts weren't handled cleanly.** The regex used to parse `amount` from JSON didn't match negative numbers, and an oversized digit string would throw an uncaught `NumberFormatException`. **Fix:** regex now handles negative numbers, and the parse is wrapped so malformed input returns a clean `400` instead of crashing the request.
+## The performance investigation that failed (kept on purpose)
 
-5. **No top-level exception handler in the HTTP layer.** Any unexpected error anywhere would leave the client with a hung connection instead of a real response. **Fix:** `PaymentServer.handlePayment()` now wraps everything in a catch-all that always returns a proper `500` JSON error.
+The "obvious" optimization — connection pooling with HikariCP — was
+implemented, measured rigorously, and **reverted because the data said it
+made things worse**:
 
-**Known limitation, not fixed (by design):** the webhook retry queue lives in memory — a server restart loses any pending retries. A production system would persist retry state to the database. Worth mentioning proactively if asked "what would you improve further."
+| | Before (plain `DriverManager`) | After (HikariCP pool) |
+|---|---|---|
+| Avg latency, sequential | 1.53 ms | 115.44 ms (**75× worse**) |
+| Throughput, 50 concurrent | 129 req/s | 25 req/s (**5× worse**) |
 
-## Second pass: two more issues found on deeper review
+At this project's actual scale — Postgres on the same machine over localhost,
+tens of requests — opening a raw connection was already nearly free, while
+the pool added validation, bookkeeping, and a 1.7s warm-up. Pooling pays off
+when connections are genuinely expensive (remote DB, real network latency,
+thousands of req/s); neither was true here. The full reasoning is preserved
+as a comment in `Db.java`. Measuring before adopting a "best practice" beat
+cargo-culting it — this experiment is the most transferable thing in the repo.
 
-6. **Balance overflow.** A single transfer with an amount close to `Long.MAX_VALUE` could silently overflow a balance in Java (wraps to a negative number, no exception). **Fix:** `LedgerService.MAX_TRANSFER_AMOUNT` caps any single transfer, rejected with a clear `400` if exceeded.
+## The bug audit
 
-7. **SSRF via `webhook_url`.** The server would happily POST to *any* URL supplied by the client, including internal addresses like `http://localhost:5432` — letting a client probe the server's internal network. **Fix:** `WebhookService.isUrlSafe()` resolves the hostname and rejects loopback, private (`10.x`/`172.16-31.x`/`192.168.x`), and link-local addresses before the request is even accepted.
+A deliberate adversarial re-read of every file (then a second, deeper pass)
+found **7 real bugs**, all fixed with regression tests:
 
-**Still-honest residual risks (disclosed, not fixed — reasonable for this project's scope):**
-- No DB connection pooling — a large burst of concurrent traffic (hundreds+, not the 25 we tested) could exhaust Postgres's connection limit.
-- The 30-second stale-idempotency-key reclaim has a theoretical edge case: a *genuinely slow* (not crashed) request could have its key reclaimed by mistake if it runs past 30s.
-- The hand-rolled JSON parser is regex-based and fine for this fixed, simple schema, but wouldn't survive adversarial/malformed input in a general-purpose API.
-- No request body size limit.
+1. **Idempotency key reuse with different parameters silently accepted** — `request_hash` existed in the schema but was never compared. Now returns `409 idempotency_key_reused`.
+2. **An invalid input permanently stranded an idempotency key** (most serious) — an uncaught exception skipped the mark-FAILED step, so the key returned `409 in_flight` forever. Fixed with defense in depth: validation caught explicitly, a `RuntimeException` safety net, and atomic 30s stale-key reclaim for genuine crashes.
+3. **Self-transfers silently allowed** — now rejected with `400`.
+4. **Negative/oversized amounts crashed or parsed wrong** — regex and parsing fixed; clean `400`s.
+5. **No top-level exception handler** — any unexpected error hung the client's connection; now a guaranteed `500`.
+6. **Balance overflow** (second pass) — an amount near `Long.MAX_VALUE` could silently wrap a balance negative; capped by `MAX_TRANSFER_AMOUNT`.
+7. **SSRF via `webhook_url`** (second pass) — the server would POST anywhere, including `http://localhost:5432`; now loopback/private/link-local targets are rejected before the request is accepted.
 
-## What this is honestly scoped as
+## Architecture (7 files, ~500 lines — read in this order)
 
-A single-service backend proving understanding of payment-system
-correctness problems (idempotency, ledger consistency, safe
-concurrency) — not a distributed, multi-node, production payment
-network. That's the honest, defensible framing for a resume bullet or
-an interview.
+1. `sql/schema.sql` — 4 tables + the DB-level ledger trigger + the durable webhook table
+2. `src/Db.java` — one method, opens a JDBC connection (env-driven config)
+3. `src/IdempotencyService.java` — the atomic "claim the key" logic
+4. `src/LedgerService.java` — money movement with `FOR UPDATE` locking
+5. `src/WebhookService.java` — persisted retry queue with startup recovery
+6. `src/PaymentService.java` — orchestrates the above for one request
+7. `src/PaymentServer.java` — the HTTP layer (`POST /payments`, `GET /health`)
+8. `src/Json.java` — tiny hand-rolled JSON helpers, no external library
+
+Built with plain `javac`, JDK built-in `HttpServer`, and raw JDBC — zero
+framework dependencies, so every line of request handling is visible and
+explainable.
+
+## Running without Docker
+
+Requires Java 21+, PostgreSQL, and the PostgreSQL JDBC jar
+(`postgresql.jar` in the repo root, or `/usr/share/java/postgresql.jar` on Debian/Ubuntu).
+
+```bash
+createdb payment_ledger
+psql -d payment_ledger -f sql/schema.sql
+javac -cp postgresql.jar -d out src/*.java
+java -cp "out:postgresql.jar" PaymentServer
+```
+
+Connection details come from `DB_URL` / `DB_USER` / `DB_PASSWORD` env vars
+(sensible local defaults; this is exactly how the CI workflow and
+docker-compose supply theirs).
+
+## Known limitations, stated up front
+
+- **No connection pooling** — deliberately, per the measurement above; would matter at much larger scale.
+- **Hand-rolled JSON parsing** — regex-based, fine for this fixed request shape, not for adversarial general-purpose input.
+- **No request body size limit** and **no API authentication**.
+- **The 30s stale-key reclaim has a theoretical edge case**: a genuinely slow (not crashed) request running past 30s could have its key reclaimed.
+- **At-least-once webhooks** — receivers must dedupe on `transaction_id` (documented tradeoff, not an oversight).
+- No real bank/UPI/card-network integration — all accounts are simulated; this models payment-system *correctness*, not a production gateway.
+
+## What's honestly scoped here
+
+A single-service backend proving understanding of the correctness problems
+underneath every real payment system — idempotency, ledger consistency, safe
+concurrency, durable notifications — tested under real concurrent load,
+audited for bugs, and documented including its limits. Not a distributed,
+multi-node production network.
