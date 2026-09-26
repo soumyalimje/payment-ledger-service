@@ -1,14 +1,16 @@
 -- ============================================================
 -- Payment Ledger Service - Schema
 -- ============================================================
--- Three tables, each enforcing one guarantee at the DB level:
---   1. accounts          - just balances we can lock rows on
---   2. idempotency_keys  - prevents double-processing a request
---   3. ledger_entries    - double-entry bookkeeping, DB-checked
+-- Four tables:
+--   1. accounts            - just balances we can lock rows on
+--   2. idempotency_keys    - prevents double-processing a request
+--   3. ledger_entries      - double-entry bookkeeping, DB-checked
+--   4. webhook_deliveries  - persisted retry state for webhook delivery
 -- ============================================================
 
 DROP TABLE IF EXISTS ledger_entries;
 DROP TABLE IF EXISTS idempotency_keys;
+DROP TABLE IF EXISTS webhook_deliveries;
 DROP TABLE IF EXISTS accounts;
 
 -- 1. Accounts: each has a running balance (in paise/cents, integer to avoid float errors)
@@ -46,6 +48,36 @@ CREATE TABLE ledger_entries (
 
 CREATE INDEX idx_ledger_transaction ON ledger_entries(transaction_id);
 CREATE INDEX idx_ledger_account ON ledger_entries(account_id);
+
+-- 4. Webhook deliveries: every webhook we owe someone is a ROW, not just a
+--    queue entry in memory. If the server crashes or restarts mid-retry,
+--    a later boot reloads every still-PENDING row and resumes the backoff
+--    schedule exactly where it left off. This was previously the service's
+--    biggest known limitation ("restart loses pending retries") -- now the
+--    database is the source of truth and the in-memory DelayQueue is just
+--    a cache for "what's due soon".
+--
+--    Semantics: AT-LEAST-ONCE delivery. If the server dies after the HTTP
+--    POST succeeded but before it could mark the row DELIVERED, the next
+--    boot delivers again -- receivers should dedupe on transaction_id
+--    (same tradeoff real payment gateways make and document).
+CREATE TABLE webhook_deliveries (
+    delivery_id     BIGSERIAL PRIMARY KEY,
+    url             TEXT NOT NULL,
+    payload         TEXT NOT NULL,
+    status          TEXT NOT NULL DEFAULT 'PENDING'
+                    CHECK (status IN ('PENDING', 'DELIVERED', 'ABANDONED')),
+    attempt         INT NOT NULL DEFAULT 0,        -- attempt number currently scheduled/running
+    next_attempt_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- Partial index: the recovery query and the worker only ever look at PENDING
+-- rows ordered by when they're next due, so only index those.
+CREATE INDEX idx_webhook_pending
+    ON webhook_deliveries(next_attempt_at)
+    WHERE status = 'PENDING';
 
 -- ============================================================
 -- DB-LEVEL ENFORCEMENT: a transaction_id's entries must sum to zero.
