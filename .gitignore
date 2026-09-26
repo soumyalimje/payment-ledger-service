@@ -2,3 +2,4 @@ out/
 *.jar
 *.class
 .DS_Store
+server.log
