@@ -1,0 +1,51 @@
+# Render Blueprint -- deploys this repo in one click:
+#   Render dashboard -> New -> Blueprint -> pick this repo -> Apply.
+#
+# Creates:
+#   1. payment-ledger-service : Docker web service (this repo's Dockerfile)
+#   2. payment-ledger-db      : free Postgres 16 instance
+#
+# The app bootstraps its own schema on first boot (SchemaBootstrap.java),
+# so the empty managed database needs no manual psql step.
+#
+# Free-tier notes:
+#   - The web service sleeps after ~15 min without traffic; first request
+#     afterwards pays a cold start while the JVM boots.
+#   - Render's free Postgres expires ~30 days after creation. To refresh,
+#     delete and re-apply the blueprint (schema + seed accounts recreate
+#     automatically). For a persistent free database, create one at
+#     neon.tech or supabase.com and set DB_URL to its JDBC connection
+#     string instead.
+
+services:
+  - type: web
+    name: payment-ledger-service
+    runtime: docker
+    plan: free
+    healthCheckPath: /health
+    envVars:
+      - key: DB_HOST
+        fromDatabase:
+          name: payment-ledger-db
+          property: host
+      - key: DB_PORT
+        fromDatabase:
+          name: payment-ledger-db
+          property: port
+      - key: DB_NAME
+        fromDatabase:
+          name: payment-ledger-db
+          property: database
+      - key: DB_USER
+        fromDatabase:
+          name: payment-ledger-db
+          property: user
+      - key: DB_PASSWORD
+        fromDatabase:
+          name: payment-ledger-db
+          property: password
+
+databases:
+  - name: payment-ledger-db
+    databaseName: payment_ledger
+    plan: free

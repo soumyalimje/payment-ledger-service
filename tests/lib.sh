@@ -107,7 +107,10 @@ compile() {
 SERVER_PID=""
 
 start_server() {
-  java -cp "$CP" PaymentServer > server.log 2>&1 &
+  # Pin PORT explicitly: the service honors the PORT env var (Render-style),
+  # and some dev shells export PORT=0 ("auto-assign"), which would make the
+  # JVM bind a random port and the health check below would never reach it.
+  PORT="${BASE_URL##*:}" java -cp "$CP" PaymentServer > server.log 2>&1 &
   SERVER_PID=$!
   for _ in $(seq 1 40); do
     if curl -s --max-time 2 "${BASE_URL}/health" > /dev/null 2>&1; then

@@ -11,6 +11,7 @@ WORKDIR /app
 ADD https://jdbc.postgresql.org/download/postgresql-42.7.4.jar postgresql.jar
 
 COPY src/ src/
+COPY sql/ sql/
 
 RUN javac -cp "postgresql.jar" -d out src/*.java
 

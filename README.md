@@ -19,6 +19,14 @@ curl -X POST http://localhost:8090/payments \
   -d '{"idempotency_key":"abc123","from_account":"customer_1","to_account":"merchant_A","amount":500,"webhook_url":"https://example.com/hook"}'
 ```
 
+## Deploy on Render (one click)
+
+The repo ships a [Blueprint](render.yaml): Render dashboard → **New → Blueprint →** pick this repo → **Apply**. It creates a Docker web service plus a free Postgres instance and wires the `DB_*` variables automatically.
+
+No manual schema step: on first boot the app detects an empty database and creates its own tables, indexes, balance-check trigger, and seed accounts (`SchemaBootstrap.java`), guarded so restarts never touch existing data. `PORT` is honored for platform routing; `/health` is the health check.
+
+Free-tier caveats, stated up front: the web service sleeps after ~15 min idle (first request pays a JVM cold start), and Render's free Postgres expires ~30 days after creation — re-apply the blueprint to recreate it (schema reseeds automatically) or point `DB_URL` at any Postgres you already run.
+
 ## Tests — run by CI on every push
 
 One command locally, zero edits needed for CI (the same scripts run against
