@@ -36,6 +36,7 @@ public class PaymentServer {
 
         server.createContext("/payments", exchange -> handlePayment(exchange, paymentService));
         server.createContext("/health", exchange -> respond(exchange, 200, "{\"status\":\"ok\"}"));
+        server.createContext("/", exchange -> handleRoot(exchange));
 
         server.setExecutor(java.util.concurrent.Executors.newFixedThreadPool(20));
 
@@ -58,6 +59,18 @@ public class PaymentServer {
             System.out.println("[server] PORT=\"" + raw + "\" is not a number; falling back to 8090");
         }
         return 8090;
+    }
+
+    private static void handleRoot(HttpExchange exchange) throws IOException {
+        if (!"GET".equalsIgnoreCase(exchange.getRequestMethod())) {
+            respond(exchange, 405, Json.error("method_not_allowed", "use GET"));
+            return;
+        }
+        respond(exchange, 200,
+            "{\"service\":\"payment-ledger-service\",\"status\":\"ok\","
+            + "\"github\":\"https://github.com/soumyalimje/payment-ledger-service\","
+            + "\"endpoints\":{\"/health\":\"GET liveness check\","
+            + "\"/payments\":\"POST create a payment (JSON body)\"}}");
     }
 
     private static void handlePayment(HttpExchange exchange, PaymentService paymentService) throws IOException {
