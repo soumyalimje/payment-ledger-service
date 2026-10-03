@@ -78,7 +78,9 @@ public class WebhookService {
             ps.setString(1, url);
             ps.setString(2, payload);
             try (ResultSet rs = ps.executeQuery()) {
-                rs.next();
+                if (!rs.next()) {
+                    throw new SQLException("INSERT INTO webhook_deliveries returned no row — expected RETURNING delivery_id");
+                }
                 return rs.getLong(1);
             }
         }

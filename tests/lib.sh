@@ -100,7 +100,7 @@ compile() {
   elif [ -f "/usr/share/java/postgresql.jar" ]; then jar_arg="/usr/share/java/postgresql.jar"
   else echo "ERROR: PostgreSQL JDBC driver not found (looked for ./$JAR and /usr/share/java/postgresql.jar)" >&2; return 1; fi
   mkdir -p out
-  javac -cp "$jar_arg" -d out src/*.java
+  javac -cp "$jar_arg" -d out src/*.java tests/*.java
 }
 
 # --- Server lifecycle -----------------------------------------------------

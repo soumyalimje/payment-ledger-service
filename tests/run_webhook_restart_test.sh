@@ -24,7 +24,7 @@ compile || exit 1
 
 HITFILE=$(mktemp)
 FAILPORT=8091
-java tests/FailFastServer.java $FAILPORT "$HITFILE" > /dev/null 2>&1 &
+java -cp "$CP" FailFastServer $FAILPORT "$HITFILE" > /dev/null 2>&1 &
 FAILPID=$!
 trap 'kill $FAILPID 2>/dev/null; pkill -f RestartRecoveryDriver 2>/dev/null; rm -f "$HITFILE"' EXIT
 for _ in $(seq 1 20); do
@@ -33,7 +33,7 @@ for _ in $(seq 1 20); do
 done
 
 # ---------- Phase 1: enqueue -> durable reschedule -> hard crash ----------
-java -cp "$CP" tests/RestartRecoveryDriver.java phase1 $FAILPORT crash-1
+java -cp "$CP" RestartRecoveryDriver phase1 $FAILPORT crash-1
 p1=$?
 assert_equals "0" "$p1" "phase 1: enqueue + reschedule + crash completed"
 hits_1=$(wc -l < "$HITFILE" | tr -d ' ')
@@ -42,7 +42,7 @@ state_1=$(db_query "SELECT status || ':' || attempt FROM webhook_deliveries WHER
 assert_equals "PENDING:2" "$state_1" "durable state after crash: PENDING with attempt 2 scheduled"
 
 # ---------- Phase 2: a FRESH process must recover and finish the job ----------
-java -cp "$CP" tests/RestartRecoveryDriver.java phase2 $FAILPORT crash-1
+java -cp "$CP" RestartRecoveryDriver phase2 $FAILPORT crash-1
 p2=$?
 assert_equals "0" "$p2" "phase 2: recovery process completed"
 

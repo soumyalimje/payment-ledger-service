@@ -122,11 +122,13 @@ public class SchemaBootstrap {
     }
 
     private static boolean tableExists(Connection conn, String tableName) throws SQLException {
-        try (Statement st = conn.createStatement();
-             ResultSet rs = st.executeQuery(
-                 "SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = '" + tableName + "')")) {
-            rs.next();
-            return rs.getBoolean(1);
+        String sql = "SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = ?)";
+        try (java.sql.PreparedStatement ps = conn.prepareStatement(sql)) {
+            ps.setString(1, tableName);
+            try (ResultSet rs = ps.executeQuery()) {
+                rs.next();
+                return rs.getBoolean(1);
+            }
         }
     }
 

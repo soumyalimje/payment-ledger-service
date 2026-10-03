@@ -73,7 +73,7 @@ public class IdempotencyService {
 
         // Same key, different request body (different accounts/amount) -- this is a
         // client bug, not a legitimate retry. Never silently reuse the old result.
-        if (!existingHash.equals(requestHash)) {
+        if (!requestHash.equals(existingHash)) {
             return new CheckResult(Outcome.HASH_MISMATCH, null);
         }
 

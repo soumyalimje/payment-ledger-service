@@ -1,6 +1,5 @@
 import java.sql.Connection;
 import java.sql.ResultSet;
-import java.sql.Statement;
 
 /**
  * Restart-safety test driver. Deliberately exercises WebhookService at the
@@ -67,14 +66,17 @@ public class RestartRecoveryDriver {
 
     /** Polls the DB until the single delivery row reaches status+attempt. */
     private static void waitForRowState(String status, int attempt, long timeoutMs) throws Exception {
+        String sql = "SELECT COUNT(*) FROM webhook_deliveries WHERE status=? AND attempt=?";
         long deadline = System.currentTimeMillis() + timeoutMs;
         while (System.currentTimeMillis() < deadline) {
-            try (Connection conn = Db.connect(); Statement st = conn.createStatement()) {
-                ResultSet rs = st.executeQuery(
-                    "SELECT COUNT(*) FROM webhook_deliveries WHERE status='" + status
-                    + "' AND attempt=" + attempt);
-                rs.next();
-                if (rs.getInt(1) >= 1) return;
+            try (Connection conn = Db.connect();
+                 java.sql.PreparedStatement ps = conn.prepareStatement(sql)) {
+                ps.setString(1, status);
+                ps.setInt(2, attempt);
+                try (ResultSet rs = ps.executeQuery()) {
+                    rs.next();
+                    if (rs.getInt(1) >= 1) return;
+                }
             }
             Thread.sleep(250);
         }

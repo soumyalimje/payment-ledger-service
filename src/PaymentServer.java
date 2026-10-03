@@ -76,7 +76,9 @@ public class PaymentServer {
             String webhookUrl = Json.extractString(body, "webhook_url"); // optional
 
             if (idempotencyKey == null || idempotencyKey.isBlank()
-                    || fromAccount == null || toAccount == null || amount == null) {
+                    || fromAccount == null || fromAccount.isBlank()
+                    || toAccount == null || toAccount.isBlank()
+                    || amount == null || amount <= 0) {
                 respond(exchange, 400, Json.error("bad_request",
                     "requires non-empty idempotency_key, from_account, to_account, amount (positive integer)"));
                 return;
