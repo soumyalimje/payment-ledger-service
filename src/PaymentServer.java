@@ -14,13 +14,28 @@ public class PaymentServer {
     public static void main(String[] args) throws IOException {
         // Managed platforms (Render, Fly.io, ...) provide an empty database and
         // expect the app to set up its own schema -- there is no shell to run
-        // `psql -f sql/schema.sql` on first boot.
-        try (java.sql.Connection conn = Db.connect()) {
-            SchemaBootstrap.run(conn);
-        } catch (Exception e) {
-            System.out.println("[schema] bootstrap failed: " + e);
-            e.printStackTrace();
-            System.exit(1); // fail fast: serving traffic without the ledger tables is pointless
+        // `psql -f sql/schema.sql` on first boot. Retry a few times in case the
+        // database container is still accepting connections on a cold start.
+        boolean bootstrapped = false;
+        for (int attempt = 1; attempt <= 5; attempt++) {
+            try (java.sql.Connection conn = Db.connect()) {
+                SchemaBootstrap.run(conn);
+                bootstrapped = true;
+                break;
+            } catch (Exception e) {
+                System.out.println("[schema] bootstrap attempt " + attempt + "/5 failed: " + e.getMessage());
+                if (attempt < 5) {
+                    try {
+                        Thread.sleep(2000);
+                    } catch (InterruptedException ie) {
+                        Thread.currentThread().interrupt();
+                        break;
+                    }
+                } else {
+                    e.printStackTrace();
+                    System.exit(1); // fail fast: serving traffic without the ledger tables is pointless
+                }
+            }
         }
 
         WebhookService webhookService = new WebhookService();
