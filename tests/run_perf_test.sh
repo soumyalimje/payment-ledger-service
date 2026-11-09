@@ -2,7 +2,7 @@
 # Manual benchmark, not part of CI: measures latency and throughput and
 # prints a comparison table. No assertions -- numbers are for the README
 # and for interview storytelling, not pass/fail gates.
-cd "$(dirname "$0")"
+cd "$(dirname "$0")/.."
 source tests/lib.sh
 
 ensure_local_postgres

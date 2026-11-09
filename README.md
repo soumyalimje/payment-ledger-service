@@ -29,16 +29,18 @@ Free-tier caveats, stated up front: the web service sleeps after ~15 min idle (f
 
 ## Tests — run by CI on every push
 
-One command locally, zero edits needed for CI (the same scripts run against
-Homebrew Postgres on a Mac and a service container on GitHub Actions via
-`DB_HOST`/`DB_PORT`/`DB_NAME` env config):
+34 assertions total across two focused test suites, run by CI on every push and PR
+(the same scripts run against Homebrew Postgres on a Mac and a service container on
+GitHub Actions via `DB_HOST`/`DB_PORT`/`DB_NAME` env config):
 
 ```bash
 bash tests/run_functional_tests.sh        # 28 assertions: functional, concurrency, all 7 bug regressions
-bash tests/run_webhook_restart_test.sh    # proves retry state survives a process crash
+bash tests/run_webhook_restart_test.sh    # 6 assertions: proves retry state survives a process crash
+# ...or run both suites (34 assertions total):
+bash tests/run_all_tests.sh
 ```
 
-Exit code 0 only if every assertion passes. What the suites actually prove:
+Exit code 0 only if every assertion passes (34/34 passing). What the suites actually prove:
 
 | Property | How it's proven |
 |---|---|
@@ -100,6 +102,7 @@ when connections are genuinely expensive (remote DB, real network latency,
 thousands of req/s); neither was true here. The full reasoning is preserved
 as a comment in `Db.java`. Measuring before adopting a "best practice" beat
 cargo-culting it — this experiment is the most transferable thing in the repo.
+The benchmark script is preserved at [`tests/run_perf_test.sh`](tests/run_perf_test.sh) (`bash tests/run_perf_test.sh`).
 
 ## The bug audit
 
@@ -114,7 +117,7 @@ found **7 real bugs**, all fixed with regression tests:
 6. **Balance overflow** (second pass) — an amount near `Long.MAX_VALUE` could silently wrap a balance negative; capped by `MAX_TRANSFER_AMOUNT`.
 7. **SSRF via `webhook_url`** (second pass) — the server would POST anywhere, including `http://localhost:5432`; now loopback/private/link-local targets are rejected before the request is accepted.
 
-## Architecture (7 files, ~500 lines — read in this order)
+## Architecture (9 files — read in this order)
 
 1. `sql/schema.sql` — 4 tables + the DB-level ledger trigger + the durable webhook table
 2. `src/Db.java` — one method, opens a JDBC connection (env-driven config)
@@ -124,6 +127,7 @@ found **7 real bugs**, all fixed with regression tests:
 6. `src/PaymentService.java` — orchestrates the above for one request
 7. `src/PaymentServer.java` — the HTTP layer (`POST /payments`, `GET /health`)
 8. `src/Json.java` — tiny hand-rolled JSON helpers, no external library
+9. `src/SchemaBootstrap.java` — first-boot schema creation, constraint trigger, and account seeding
 
 Built with plain `javac`, JDK built-in `HttpServer`, and raw JDBC — zero
 framework dependencies, so every line of request handling is visible and
